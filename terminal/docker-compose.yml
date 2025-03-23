@@ -1,0 +1,5 @@
+services:
+  echo-server:
+    image: vaibhavgeek/barebots
+    network_mode: host
+    restart: unless-stopped
