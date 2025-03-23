@@ -31,7 +31,7 @@ const config: HardhatUserConfig = {
   etherscan: {
     apiKey: {
       // Arbitrum
-      arbitrum: process.env.ARBISCAN_API_KEY || "",
+      arbitrumOne: process.env.ARBISCAN_API_KEY || "",
       arbitrumSepolia: process.env.ARBISCAN_API_KEY || ""
     },
     customChains: [

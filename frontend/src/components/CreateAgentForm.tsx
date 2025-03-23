@@ -1,5 +1,5 @@
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import MCPCard from "./MCPCard";
 import { toast } from "@/components/ui/use-toast";
+import { ethers } from "ethers";
+import { useWallet } from "@/contexts/WalletContext";
+import AgentNFTAbi from "@/abi/AgentNFT.json";
+import { PinataSDK } from "pinata";
+import { pinata } from "@/utils/config";
 import {
   Github,
   Search,
@@ -58,8 +63,15 @@ const mcps = [
   { id: "ideas", name: "Idea Generation", icon: <Lightbulb size={24} /> },
 ];
 
+// Contract config
+const CONTRACT_ADDRESS = "0x7fad94e955a501ef4299002db452d1a29e6b3865";
+const TARGET_CHAIN_ID = "0xa4b1"; // Arbitrum chain ID in hex
+
 const CreateAgentForm: React.FC = () => {
+  const { isConnected, account, connectWallet } = useWallet();
+  const [isDeploying, setIsDeploying] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
+  const [currentChainId, setCurrentChainId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: "",
     invocation: "ping", // or "stream"
@@ -69,6 +81,47 @@ const CreateAgentForm: React.FC = () => {
     storageLink: "",
     useTEE: false,
   });
+  
+  // Check the current chain ID when wallet is connected
+  useEffect(() => {
+    const checkChainId = async () => {
+      if (isConnected && window.ethereum) {
+        try {
+          const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+          setCurrentChainId(chainId);
+          
+          // If not on Arbitrum, prompt user to switch networks
+          if (chainId !== TARGET_CHAIN_ID) {
+            toast({
+              title: "Wrong network",
+              description: "Please switch to Arbitrum network",
+              variant: "destructive",
+            });
+            
+            // Try to switch to Arbitrum
+            await switchToArbitrum();
+          }
+        } catch (error) {
+          console.error("Error getting chain ID:", error);
+        }
+      }
+    };
+    
+    checkChainId();
+    
+    // Listen for chain changes
+    if (window.ethereum) {
+      window.ethereum.on('chainChanged', (chainId: string) => {
+        setCurrentChainId(chainId);
+      });
+    }
+    
+    return () => {
+      if (window.ethereum) {
+        window.ethereum.removeAllListeners('chainChanged');
+      }
+    };
+  }, [isConnected]);
 
   const handleNextStep = () => {
     // Validate current step
@@ -132,22 +185,166 @@ const CreateAgentForm: React.FC = () => {
     });
   };
 
-  const handleDeploy = () => {
-    // Here you would call the smart contract function
-    toast({
-      title: "Deploying AI Agent",
-      description: "Your agent is being deployed to the Arbitrum chain",
-    });
+  // Function to switch to Arbitrum network
+  const switchToArbitrum = useCallback(async () => {
+    if (!window.ethereum) return false;
     
-    console.log("Deploying agent with data:", formData);
-    
-    // Simulate successful deployment after 2 seconds
-    setTimeout(() => {
-      toast({
-        title: "Success",
-        description: "Your AI agent has been successfully deployed and is now active",
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: TARGET_CHAIN_ID }],
       });
-    }, 2000);
+      return true;
+    } catch (switchError: any) {
+      // This error code indicates that the chain has not been added to MetaMask
+      if (switchError.code === 4902) {
+        try {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: TARGET_CHAIN_ID,
+              chainName: 'Arbitrum One',
+              nativeCurrency: {
+                name: 'ETH',
+                symbol: 'ETH',
+                decimals: 18
+              },
+              rpcUrls: ['https://arb1.arbitrum.io/rpc'],
+              blockExplorerUrls: ['https://arbiscan.io/']
+            }],
+          });
+          return true;
+        } catch (addError) {
+          console.error('Error adding Arbitrum chain to MetaMask:', addError);
+          return false;
+        }
+      }
+      console.error('Error switching to Arbitrum chain:', switchError);
+      return false;
+    }
+  }, [TARGET_CHAIN_ID]);
+
+  // Upload JSON to Pinata
+  const uploadToPinata = async (data: any) => {
+    try {
+      // Convert data object to JSON
+      const jsonData = JSON.stringify(data);
+      
+      // Create a Blob and then a File object from the JSON string
+      const blob = new Blob([jsonData], { type: 'application/json' });
+      const file = new File([blob], `${data.name.replace(/\s+/g, '-')}-agent.json`, { type: 'application/json' });
+      
+      // Upload the file to Pinata
+      const result = await pinata.upload.public.file(file);
+      
+      // Return the IPFS hash (CID)
+      return `ipfs://${result.cid}`;
+    } catch (error) {
+      console.error('Error uploading to Pinata:', error);
+      throw error;
+    }
+  };
+
+  // Handle agent deployment
+  const handleDeploy = async () => {
+    if (!isConnected) {
+      toast({
+        title: "Wallet not connected",
+        description: "Please connect your wallet first",
+        variant: "destructive",
+      });
+      await connectWallet();
+      return;
+    }
+
+    // Check if we're on the correct chain
+    if (currentChainId !== TARGET_CHAIN_ID) {
+      toast({
+        title: "Wrong network",
+        description: "Please switch to Arbitrum network",
+        variant: "destructive",
+      });
+      
+      // Try to switch to Arbitrum
+      const switched = await switchToArbitrum();
+      if (!switched) return;
+    }
+
+    try {
+      setIsDeploying(true);
+      
+      toast({
+        title: "Preparing deployment",
+        description: "Creating metadata for your AI agent",
+      });
+      
+      // Prepare agent data JSON for IPFS
+      const agentData = {
+        name: formData.name,
+        invocation: formData.invocation,
+        mcps: formData.selectedMCPs.map(mcpId => {
+          const mcp = mcps.find(m => m.id === mcpId);
+          return {
+            id: mcpId,
+            name: mcp?.name,
+            config: formData.mcpConfigs[mcpId] || ""
+          };
+        }),
+        autonomyLevel: formData.autonomyLevel,
+        storageLink: formData.storageLink,
+        useTEE: formData.useTEE,
+        createdAt: new Date().toISOString(),
+        owner: account
+      };
+      
+      // Upload to Pinata
+      toast({
+        title: "Uploading metadata",
+        description: "Storing agent data on IPFS via Pinata",
+      });
+      
+      const ipfsUri = await uploadToPinata(agentData);
+      
+      // Get the contract instance
+      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const signer = provider.getSigner();
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, AgentNFTAbi.abi, signer);
+      
+      toast({
+        title: "Deploying agent",
+        description: "Confirm the transaction in your wallet",
+      });
+      
+      // Call the agentRegister function
+      const tx = await contract.agentRegister(ipfsUri);
+      
+      // Wait for transaction to be mined
+      toast({
+        title: "Transaction submitted",
+        description: "Waiting for confirmation...",
+      });
+      
+      const receipt = await tx.wait();
+      
+      // Get the tokenId from the event
+      const event = receipt.events?.find(e => e.event === "AgentRegistered");
+      const tokenId = event?.args?.tokenId;
+      
+      toast({
+        title: "Success!",
+        description: `Your AI agent has been deployed with ID: ${tokenId}`,
+      });
+      
+    } catch (error: any) {
+      console.error("Error deploying agent:", error);
+      toast({
+        title: "Deployment failed",
+        description: error.message || "Failed to deploy AI agent",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeploying(false);
+    }
   };
 
   return (
@@ -322,12 +519,28 @@ const CreateAgentForm: React.FC = () => {
           </TabsContent>
         </Tabs>
 
+        {/* Network warning */}
+        {isConnected && currentChainId !== TARGET_CHAIN_ID && (
+          <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 rounded-md border border-yellow-200">
+            <p className="text-sm font-medium">You are not connected to Arbitrum network. Please switch networks to deploy your agent.</p>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={switchToArbitrum} 
+              className="mt-2"
+            >
+              Switch to Arbitrum
+            </Button>
+          </div>
+        )}
+        
         <div className="mt-8 space-x-2 flex justify-between">
           {activeStep > 0 ? (
             <Button
               variant="outline"
               onClick={handlePreviousStep}
               className="hover:bg-secondary"
+              disabled={isDeploying}
             >
               Previous
             </Button>
@@ -337,12 +550,20 @@ const CreateAgentForm: React.FC = () => {
           
           {activeStep < 2 ? (
             <Button onClick={handleNextStep}>Next</Button>
+          ) : !isConnected ? (
+            <Button 
+              onClick={connectWallet}
+              className="bg-primary hover:bg-primary/90"
+            >
+              Connect Wallet to Deploy
+            </Button>
           ) : (
             <Button 
               onClick={handleDeploy}
               className="bg-primary hover:bg-primary/90"
+              disabled={isDeploying}
             >
-              Deploy Agent
+              {isDeploying ? "Deploying..." : "Deploy Agent"}
             </Button>
           )}
         </div>
