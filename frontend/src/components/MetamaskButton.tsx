@@ -10,7 +10,7 @@ const MetamaskButton: React.FC = () => {
   return isConnected ? (
     <Button
       variant="outline"
-      className="rounded-full font-medium hover-lift transition-all duration-300 border border-indigo-500/20 bg-white/10 backdrop-blur-sm text-white"
+      className="rounded-full font-medium hover-lift transition-all duration-300 border border-indigo-500 bg-indigo-100 text-indigo-800"
       onClick={disconnectWallet}
     >
       <Wallet className="h-4 w-4 mr-2" />

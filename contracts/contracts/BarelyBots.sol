@@ -2,11 +2,10 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 
 contract AgentNFT is ERC721URIStorage {
-    using Counters for Counters.Counter;
-    Counters.Counter private _tokenIds;
+    // Replace Counters with a simple uint256 variable
+    uint256 private _currentTokenId;
     
     // Mapping from NFT ID to prompt details
     struct PromptDetails {
@@ -32,8 +31,9 @@ contract AgentNFT is ERC721URIStorage {
      * @return tokenId The ID of the newly minted NFT
      */
     function agentRegister(string memory tokenURI) public returns (uint256) {
-        _tokenIds.increment();
-        uint256 newTokenId = _tokenIds.current();
+        // Increment token ID directly without using Counters
+        _currentTokenId += 1;
+        uint256 newTokenId = _currentTokenId;
         
         _mint(msg.sender, newTokenId);
         _setTokenURI(newTokenId, tokenURI);
@@ -53,7 +53,6 @@ contract AgentNFT is ERC721URIStorage {
      * @param amount The amount required to access the prompt
      */
     function promptRegister(uint256 tokenId, string memory promptURI, uint256 amount) public {
-        require(_exists(tokenId), "AgentNFT: Token does not exist");
         require(ownerOf(tokenId) == msg.sender, "AgentNFT: Only token owner can register prompts");
         
         _prompts[tokenId] = PromptDetails({
@@ -70,12 +69,13 @@ contract AgentNFT is ERC721URIStorage {
      * @return The prompt URI
      */
     function payPrompt(uint256 tokenId) public payable returns (string memory) {
-        require(_exists(tokenId), "AgentNFT: Token does not exist");
+        // This will revert if token doesn't exist
+        address tokenOwner = ownerOf(tokenId);
         require(_prompts[tokenId].amount > 0, "AgentNFT: No prompt registered for this token");
         require(msg.value >= _prompts[tokenId].amount, "AgentNFT: Insufficient payment");
         
         // Transfer payment to the NFT owner
-        payable(ownerOf(tokenId)).transfer(msg.value);
+        payable(tokenOwner).transfer(msg.value);
         
         emit PromptAccessed(msg.sender, tokenId);
         
@@ -89,7 +89,8 @@ contract AgentNFT is ERC721URIStorage {
      * @return amount The amount required to access the prompt
      */
     function getPromptDetails(uint256 tokenId) public view returns (string memory promptURI, uint256 amount) {
-        require(_exists(tokenId), "AgentNFT: Token does not exist");
+        // This will revert if token doesn't exist
+        ownerOf(tokenId);
         
         PromptDetails memory details = _prompts[tokenId];
         return (details.promptURI, details.amount);
@@ -104,24 +105,4 @@ contract AgentNFT is ERC721URIStorage {
         return _ownerTokens[owner];
     }
     
-    /**
-     * @dev Override _transfer to update ownership tracking
-     */
-    function _transfer(address from, address to, uint256 tokenId) internal override {
-        super._transfer(from, to, tokenId);
-        
-        // Remove token from previous owner's list
-        uint256[] storage fromTokens = _ownerTokens[from];
-        for (uint256 i = 0; i < fromTokens.length; i++) {
-            if (fromTokens[i] == tokenId) {
-                // Replace with the last element and pop
-                fromTokens[i] = fromTokens[fromTokens.length - 1];
-                fromTokens.pop();
-                break;
-            }
-        }
-        
-        // Add token to new owner's list
-        _ownerTokens[to].push(tokenId);
-    }
 }
